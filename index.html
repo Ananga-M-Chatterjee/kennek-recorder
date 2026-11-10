@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Kennek Recorder</title><meta name="theme-color" content="#0E1222"><meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=Lora:ital,wght@1,500&display=swap">
+<style>
+:root{--bg:#0E1222;--fg:#F1ECE2;--mut:#9AA2BC;--line:#2C3557;--chip:#1F2640;--or:#FF6B35;--red:#E8432B;--teal:#35B49E;color-scheme:dark}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 Inter,system-ui,sans-serif;min-height:100dvh}
+.wrap{max-width:900px;margin:0 auto;padding:calc(12px + env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) calc(16px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px));display:grid;gap:12px;min-height:100dvh;grid-template-rows:auto auto 1fr auto auto}
+.top{display:flex;align-items:center;gap:10px}.top b{flex:1}.mut{color:var(--mut)}.small{font-size:13px}
+button,select,input{font:inherit}button{border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--fg);padding:8px 12px;font-weight:600;cursor:pointer}
+button.pri{background:var(--or);border-color:var(--or);color:#fff}button:disabled{opacity:.4}
+select,input{width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--chip);color:var(--fg)}
+.tabs{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none}.tabs button{flex:none;background:var(--chip);color:#B9C0D8;padding:6px 11px;font-size:13px}
+.tabs button.on{background:var(--fg);color:var(--bg)}.tabs button.kept{border-color:var(--teal);color:#7FE0CC}.tabs button.on.kept{color:var(--bg)}
+.prompter{overflow-y:auto;font:italic 500 clamp(22px,5.6vw,36px)/1.55 Lora,Georgia,serif}.warm{font:13px Inter,sans-serif;color:var(--mut);margin-bottom:10px}
+mark{background:none;color:#FFB08F;text-decoration:underline solid #FF7A4A 2px;text-underline-offset:4px}
+.ctrl{display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap}
+.rec{width:74px;height:74px;border-radius:50%;background:var(--red);border:5px solid var(--fg);padding:0}.rec.on{border-radius:18px;animation:p 1.2s infinite}@keyframes p{50%{box-shadow:0 0 0 10px rgba(232,67,43,.25)}}
+.timer{font-variant-numeric:tabular-nums;color:#B9C0D8;min-width:44px;text-align:center}.level{height:4px;border-radius:2px;background:var(--line);overflow:hidden}.level i{display:block;height:100%;width:0;background:var(--teal)}
+.hint{text-align:center;color:var(--mut);font-size:13px;min-height:2.4em}.card{border:1px solid var(--line);border-radius:14px;padding:16px;display:grid;gap:12px;align-content:start}
+audio{max-width:100%}[hidden]{display:none!important}
+</style></head><body><div class="wrap" id="app"></div>
+<script>
+'use strict';
+/* Kennek Recorder: the phone/browser companion to Kennek Studio. Records each scene with the microphone and uploads it
+   straight into the pipeline repo (chapters/<id>/audio/<session>/<scene>). Your GitHub token stays in this browser only. */
+const $ = s => document.querySelector(s), app = $('#app');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const ls = { get(k, d) { try { const v = localStorage.getItem('kr.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } }, set(k, v) { try { localStorage.setItem('kr.' + k, JSON.stringify(v)); } catch {} } };
+const REPO = 'Ananga-M-Chatterjee/kennek-klik-pipeline';
+let token = ls.get('token', '');
+async function gh(path, opt = {}) {
+  const r = await fetch(`https://api.github.com/repos/${REPO}${path}`, { method: opt.method || 'GET', cache: 'no-store',
+    headers: { Accept: opt.raw ? 'application/vnd.github.raw' : 'application/vnd.github+json', Authorization: 'Bearer ' + token, ...(opt.body ? { 'Content-Type': 'application/json' } : {}) },
+    body: opt.body ? JSON.stringify(opt.body) : undefined });
+  if (!r.ok) throw Object.assign(new Error(r.status + ' ' + (await r.text()).slice(0, 120)), { status: r.status });
+  return r.status === 204 ? null : opt.raw ? r.text() : r.json();
+}
+const readJSON = async p => JSON.parse(await gh(`/contents/${p.split('/').map(encodeURIComponent).join('/')}?ref=main`, { raw: true }));
+async function put(path, b64, message) {
+  let sha; try { sha = (await gh(`/contents/${path}?ref=main`)).sha; } catch (e) { if (e.status !== 404) throw e; }
+  return gh(`/contents/${path}`, { method: 'PUT', body: { message, content: b64, branch: 'main', sha } });
+}
+const norm = w => w.toLowerCase().replace(/[’‘]/g, "'").replace(/[^a-z0-9']+/g, '');
+const tokens = s => s.split(/[\s—–-]+/).filter(Boolean);
+const toB64 = blob => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1]); r.onerror = no; r.readAsDataURL(blob); });
+
+function setup(msg) {
+  app.innerHTML = `<div class="top"><b>Kennek Recorder</b></div><div class="card"><div>Connect once on this device. Use the same fine-grained GitHub token as Kennek Studio (only the kennek-klik-pipeline repo; Contents and Actions read and write).</div>
+  ${msg ? `<div style="color:#FF9C78">${esc(msg)}</div>` : ''}<input id="tk" type="password" placeholder="github_pat_…" autocomplete="off"><button class="pri" id="sv">Save</button>
+  <div class="small mut">The token is stored only in this browser. This page holds no recordings or data; everything goes to your private pipeline repo.</div></div>`;
+  $('#sv').onclick = () => { token = $('#tk').value.trim(); ls.set('token', token); start(); };
+}
+async function start() {
+  if (!token) return setup();
+  app.innerHTML = '<div class="hint">Loading chapters…</div>';
+  try {
+    const st = await readJSON('studio/state.json'); const want = location.hash.match(/ch--([\w-]+)/);
+    const open = Object.entries(st.chapters).filter(([, c]) => !c.published).map(([id, c]) => ({ id, ...c }));
+    const pick = want && open.find(c => c.id === want[1]);
+    if (pick) return studio(pick.id);
+    app.innerHTML = `<div class="top"><b>Kennek Recorder</b><button id="lo" class="small">Forget token</button></div><div class="card"><div>Which chapter are you recording?</div>
+      ${open.map(c => `<button data-id="${esc(c.id)}">${esc(c.title || c.id)}</button>`).join('') || '<div class="mut">Nothing to record right now.</div>'}</div>`;
+    app.querySelectorAll('[data-id]').forEach(b => b.onclick = () => { location.hash = 'ch--' + b.dataset.id; studio(b.dataset.id); });
+    $('#lo').onclick = () => { ls.set('token', ''); token = ''; setup(); };
+  } catch (e) { setup(e.status === 401 || e.status === 404 ? 'GitHub refused the token. Check it and try again.' : 'Couldn’t reach GitHub: ' + e.message); }
+}
+async function studio(id) {
+  const script = await readJSON(`chapters/${id}/script.json`); const scenes = script.scenes;
+  let watch = []; try { const w = await readJSON('studio/watch.json'); watch = (w.words || []).map(norm); } catch {}
+  const key = 'sess.' + id; let sess = ls.get(key, null);
+  if (!sess || Date.now() - sess.t > 8 * 3600e3) { const d = new Date(), p = n => String(n).padStart(2, '0'); sess = { name: `rec-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`, t: Date.now(), done: {} }; ls.set(key, sess); }
+  let idx = Math.max(0, scenes.findIndex(s => !sess.done[s.id])), stream = null, rec = null, chunks = [], blob = null, t0 = 0, tick = null, an = null;
+  const mime = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm'].find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
+  const ext = mime.startsWith('audio/mp4') ? 'm4a' : 'webm';
+  app.innerHTML = `<div class="top"><button id="bk">‹</button><b>${esc(script.title)} · ${esc(sess.name.slice(4))}</b><span class="small" id="kc"></span></div>
+    <div class="tabs" id="tabs"></div><div class="prompter" id="pt"></div>
+    <div><div class="level"><i id="lv"></i></div><div class="ctrl" style="margin-top:12px"><button id="play" disabled>Play</button><button class="rec" id="rb" aria-label="Record"></button><span class="timer" id="tm">0:00</span><button class="pri" id="keep" disabled>Keep</button></div></div>
+    <div class="hint" id="hint">Record every scene in this sitting so the tone stays the same.</div>`;
+  const draw = () => {
+    const s = scenes[idx];
+    $('#tabs').innerHTML = scenes.map((x, i) => `<button class="${i === idx ? 'on' : ''} ${sess.done[x.id] ? 'kept' : ''}" data-i="${i}">${x.id}${sess.done[x.id] ? ' ✓' : ''}</button>`).join('');
+    $('#tabs').querySelectorAll('button').forEach(b => b.onclick = () => { if (!rec) { idx = +b.dataset.i; blob = null; draw(); } });
+    const w = tokens(s.say).filter(t => watch.includes(norm(t)));
+    $('#pt').innerHTML = `<div class="warm">${s.id}${w.length ? ' · Watch: ' + esc([...new Set(w)].join(', ')) : ''}</div>` + tokens(s.say).map(t => watch.includes(norm(t)) ? `<mark>${esc(t)}</mark>` : esc(t)).join(' ');
+    $('#pt').scrollTop = 0; $('#kc').textContent = `${scenes.filter(x => sess.done[x.id]).length}/${scenes.length}`;
+    $('#keep').disabled = !blob; $('#play').disabled = !blob; $('#tm').textContent = '0:00';
+  };
+  $('#bk').onclick = () => { if (!rec) { stream?.getTracks().forEach(t => t.stop()); location.hash = ''; start(); } };
+  $('#play').onclick = () => blob && new Audio(URL.createObjectURL(blob)).play();
+  $('#rb').onclick = async () => {
+    if (rec) { rec.stop(); return; }
+    try { stream ||= await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } }); }
+    catch { $('#hint').textContent = 'Microphone blocked. Allow it for this site in your browser settings.'; return; }
+    if (!an) { const ac = new AudioContext(); an = ac.createAnalyser(); ac.createMediaStreamSource(stream).connect(an); const buf = new Uint8Array(an.fftSize);
+      const loop = () => { an.getByteTimeDomainData(buf); let pk = 0; for (const v of buf) pk = Math.max(pk, Math.abs(v - 128)); const l = $('#lv'); if (!l) return; l.style.width = Math.min(100, pk / 1.1) + '%'; l.style.background = pk > 120 ? '#E8432B' : '#35B49E'; requestAnimationFrame(loop); }; loop(); }
+    chunks = []; rec = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 192000 } : undefined);
+    rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+    rec.onstop = () => { blob = new Blob(chunks, { type: rec.mimeType }); rec = null; clearInterval(tick); $('#rb').classList.remove('on'); $('#keep').disabled = false; $('#play').disabled = false; $('#hint').textContent = 'Listen back, then Keep, or tap record to retake.'; };
+    rec.start(); t0 = Date.now(); $('#rb').classList.add('on'); $('#keep').disabled = true; $('#play').disabled = true; $('#hint').textContent = `Recording ${scenes[idx].id}… tap to stop.`;
+    tick = setInterval(() => { const s = Math.floor((Date.now() - t0) / 1000); $('#tm').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }, 250);
+  };
+  $('#keep').onclick = async () => {
+    const s = scenes[idx].id, b = $('#keep'); b.disabled = true; b.textContent = 'Saving…';
+    try {
+      await put(`chapters/${id}/audio/${sess.name}/${s}.${ext}`, await toB64(blob), `Recorder: ${id} ${s} (${sess.name})`);
+      sess.done[s] = true; sess.t = Date.now(); ls.set(key, sess); blob = null; b.textContent = 'Keep';
+      if (scenes.every(x => sess.done[x.id])) {
+        $('#hint').textContent = 'All scenes in. Starting the diction check…';
+        try { await gh('/actions/workflows/asr-check.yml/dispatches', { method: 'POST', body: { ref: 'main', inputs: { files: scenes.map(x => `chapters/${id}/audio/${sess.name}/${x.id}.${ext}`).join(' '), out: `chapters/${id}/asr/${sess.name}.json` } } });
+          $('#hint').textContent = 'All scenes in. The diction check is running; results show in Kennek Studio in about 5 minutes.'; }
+        catch { $('#hint').textContent = 'All scenes in. Start the diction check from Kennek Studio.'; }
+      } else { idx = Math.min(scenes.length - 1, idx + 1); $('#hint').textContent = `${s} saved.`; }
+      draw();
+    } catch (e) { b.textContent = 'Keep'; b.disabled = false; $('#hint').textContent = 'Couldn’t save: ' + e.message; }
+  };
+  draw();
+}
+addEventListener('hashchange', () => { if (!/ch--/.test(location.hash)) start(); });
+start();
+</script></body></html>
